@@ -1,6 +1,6 @@
-# @telecrypt-io/ui 0.1.0 (local prototype)
+# @telecrypt-io/ui 0.1.0
 
-This is a framework-neutral, local-only prototype for shared TeleCrypt UI code.
+This is the framework-neutral shared foundation for TeleCrypt UI code.
 It currently contains two deliberately independent exports:
 
 - `product.css` — a byte-for-byte extraction of
@@ -12,16 +12,16 @@ It currently contains two deliberately independent exports:
 The Storage favicon is deliberately outside this package. It is not a shared
 brand asset, design-token source, or visual reference for Landing or Plan.
 
-## Local integration and verification
+## Integration and verification
 
-Storage retains `src/theme.css` as its cascade entry point. Until an official
-TeleCrypt UI package exists, Storage vendors this exact stylesheet at
+Storage retains `src/theme.css` as its cascade entry point. Storage vendors the exact stylesheet from
+the immutable `v0.1.0` source release at
 `src/vendor/telecrypt-ui/product.css`; it imports that local file directly, so
-the Storage release is self-contained and has neither an unpublished npm
-dependency nor Vite alias wiring. Its `PROVENANCE.json` records the baseline,
+the Storage release is self-contained and has neither a runtime npm dependency
+nor Vite alias wiring. Its `PROVENANCE.json` records the baseline, release,
 content hash, and exact canonical shared-UI commit vendored by that consumer.
 
-Plan has no frontend package manager, so its local Controlplane prototype embeds
+Plan has no frontend package manager, so Controlplane embeds
 a vendored `internal/steward/assets/product.css`. That file must remain
 byte-identical to this package's `src/product.css`; Plan-specific layout stays in
 its separate embedded `plan.css`.
@@ -37,8 +37,16 @@ sha256sum ui/src/product.css controlplane/internal/steward/assets/product.css
 sha256sum ui/assets/logo-mark.png www/public/logo-mark.png
 ```
 
-For this prototype, the first two values are both
+For `v0.1.0`, the first two values are both
 `a5535973ac04958f410b81b65871597de4f87f48`, and the two mark hashes are both
 `48310e5b208da4c82f138133f13d9f543faddab306a4c847d89f47a429e28a7c`.
-Those source checks establish CSS and asset identity; release work still needs
-an operator-run visual regression against the tagged Storage interface.
+Those source checks establish CSS and asset identity. Each consumer still needs
+an operator-run visual regression against its exact tagged interface release.
+
+## Release contract
+
+This repository is source-only and deliberately remains `private: true` as an
+npm package: consumers vendor reviewed files from an immutable exact Git tag.
+Tags use `v<major>.<minor>.<patch>`. A tag must match `package.json`, and the
+verification workflow checks the canonical CSS and mark hashes without building
+or publishing an artifact.
