@@ -48,9 +48,12 @@ jobs:
           fi
           version="$(node -p 'require("./package.json").version')"
           test "v$version" = "$RELEASE"
-          timeout 30s git fetch --force --no-tags origin refs/heads/main:refs/remotes/origin/main
-          test "$(git cat-file -t "refs/tags/$RELEASE")" = tag
-          release_commit="$(git rev-parse "refs/tags/$RELEASE^{commit}")"
+          remote_tag_ref="refs/remotes/origin/release-tag"
+          timeout 30s git fetch --force --no-tags origin \
+            "refs/tags/$RELEASE:$remote_tag_ref" \
+            refs/heads/main:refs/remotes/origin/main
+          test "$(git cat-file -t "$remote_tag_ref")" = tag
+          release_commit="$(git rev-parse "$remote_tag_ref^{commit}")"
           test "$release_commit" = "$RELEASE_SHA"
           test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
           git merge-base --is-ancestor "$release_commit" refs/remotes/origin/main
