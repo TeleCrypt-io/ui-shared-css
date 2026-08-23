@@ -22,7 +22,7 @@ nor Vite alias wiring. Its `PROVENANCE.json` records the baseline, release,
 content hash, and exact canonical shared-UI commit vendored by that consumer.
 
 Plan has no frontend package manager, so Controlplane embeds
-a vendored `internal/steward/assets/product.css`. That file must remain
+a vendored `internal/plan/assets/product.css`. That file must remain
 byte-identical to this package's `src/product.css`; Plan-specific layout stays in
 its separate embedded `plan.css`.
 
@@ -30,11 +30,11 @@ The following source checks must remain true before any visual regression suite
 is run:
 
 ```sh
-git -C storage rev-parse storage-web-v0.2.0:src/theme.css
-git hash-object ui/src/product.css
-sha256sum ui/src/product.css storage/src/vendor/telecrypt-ui/product.css
-sha256sum ui/src/product.css controlplane/internal/steward/assets/product.css
-sha256sum ui/assets/logo-mark.png www/public/logo-mark.png
+git -C storage.telecrypt.io rev-parse storage-web-v0.2.0:src/theme.css
+git hash-object ui-shared-css/src/product.css
+sha256sum ui-shared-css/src/product.css storage.telecrypt.io/src/vendor/telecrypt-ui/product.css
+sha256sum ui-shared-css/src/product.css controlplane/internal/plan/assets/product.css
+sha256sum ui-shared-css/assets/logo-mark.png www.telecrypt.io/public/logo-mark.png
 ```
 
 For `v0.1.0`, the first two values are both
