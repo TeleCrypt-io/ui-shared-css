@@ -13,6 +13,7 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     env:
       GIT_CONFIG_COUNT: "2"
       GIT_CONFIG_KEY_0: init.defaultBranch
@@ -47,7 +48,7 @@ jobs:
           fi
           version="$(node -p 'require("./package.json").version')"
           test "v$version" = "$RELEASE"
-          git fetch --force --no-tags origin refs/heads/main:refs/remotes/origin/main
+          timeout 30s git fetch --force --no-tags origin refs/heads/main:refs/remotes/origin/main
           test "$(git cat-file -t "refs/tags/$RELEASE")" = tag
           release_commit="$(git rev-parse "refs/tags/$RELEASE^{commit}")"
           test "$release_commit" = "$RELEASE_SHA"
