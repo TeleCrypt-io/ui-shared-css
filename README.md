@@ -1,4 +1,4 @@
-# @telecrypt-io/ui 0.1.0
+# @telecrypt-io/ui 0.1.1
 
 This is the framework-neutral shared foundation for TeleCrypt UI code.
 It currently contains two deliberately independent exports:
@@ -7,7 +7,7 @@ It currently contains two deliberately independent exports:
   `storage-web-v0.2.0/src/theme.css`. It preserves Storage's existing visual
   interface; it is not a redesign or a new cross-service theme.
 - `logo-mark.png` — the original custom TeleCrypt Landing mark, copied without
-  modification from `www/public/logo-mark.png`.
+  modification from `www.telecrypt.io/public/logo-mark.png`.
 
 The Storage favicon is deliberately outside this package. It is not a shared
 brand asset, design-token source, or visual reference for Landing or Plan.
@@ -50,3 +50,8 @@ npm package: consumers vendor reviewed files from an immutable exact Git tag.
 Tags use `v<major>.<minor>.<patch>`. A tag must match `package.json`, and the
 verification workflow checks the canonical CSS and mark hashes without building
 or publishing an artifact.
+
+## License
+
+TeleCrypt-authored source in this repository is licensed under [BUSL-1.1](./LICENSE). Vendored
+consumer assets retain their existing source and license notices.

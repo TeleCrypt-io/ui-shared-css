@@ -1,13 +1,14 @@
 {
   "name": "@telecrypt-io/ui",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Framework-neutral TeleCrypt product CSS and canonical brand assets.",
   "license": "BUSL-1.1",
   "files": [
     "src",
     "assets",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "exports": {
     "./product.css": "./src/product.css",
