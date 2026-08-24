@@ -1,21 +1,18 @@
-# @telecrypt-io/ui 0.1.1
+# @telecrypt-io/ui
 
 This is the framework-neutral shared foundation for TeleCrypt UI code.
 It currently contains two deliberately independent exports:
 
-- `product.css` — a byte-for-byte extraction of
-  `storage-web-v0.2.0/src/theme.css`. It preserves Storage's existing visual
-  interface; it is not a redesign or a new cross-service theme.
-- `logo-mark.png` — the original custom TeleCrypt Landing mark, copied without
-  modification from `www.telecrypt.io/public/logo-mark.png`.
+- `product.css` — the shared product stylesheet consumed by Storage Web and Plan.
+- `logo-mark.png` — the shared TeleCrypt mark consumed by website surfaces.
 
-The Storage favicon is deliberately outside this package. It is not a shared
-brand asset, design-token source, or visual reference for Landing or Plan.
+The package contains only these explicit exports. Service-specific layout and branding remain in
+each consumer.
 
 ## Integration and verification
 
 Storage retains `src/theme.css` as its cascade entry point. Storage vendors the exact stylesheet from
-the immutable `v0.1.1` source release at
+an immutable exact source release at
 `src/vendor/telecrypt-ui/product.css`; it imports that local file directly, so
 the Storage release is self-contained and has neither a runtime npm dependency
 nor Vite alias wiring. Its `PROVENANCE.json` records the exact current release
@@ -32,12 +29,20 @@ against its exact tagged interface release.
 
 ## Release contract
 
-This repository is source-only and deliberately remains `private: true` as an
-npm package: consumers vendor reviewed files from the immutable exact `v0.1.1`
-Git tag.
+This repository deliberately remains `private: true` as an npm package: consumers vendor
+reviewed files from an immutable exact Git tag. The tag-only workflow packages the exact
+five-file tarball once and publishes it as the sole GitHub Release asset; it does not publish to
+the npm registry. It creates or resumes one draft Release, verifies its immutable metadata and
+exact downloaded bytes, then publishes it. A rerun may resume only the same exact draft Release
+and its already-verified asset; any pre-existing published Release is refused so a publication
+cannot silently adopt an earlier artifact.
 Tags use `v<major>.<minor>.<patch>`. A tag must match `package.json`, and the
-verification workflow checks the canonical CSS and mark hashes without building
-or publishing an artifact.
+verification workflow checks the canonical CSS, mark hashes, package contents, and tests before
+the release job runs. Before enabling the release job, the repository administrator must enforce
+protected, non-force-movable release tags and GitHub immutable releases. The workflow performs
+strict checks immediately before and after GitHub operations, but those API calls are not an atomic
+tag-and-release transaction; the administrator must treat the repository settings as a release
+precondition.
 
 ## License
 

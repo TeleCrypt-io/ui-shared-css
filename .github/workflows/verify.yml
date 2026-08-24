@@ -7,74 +7,34 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: shared-ui-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
-
-env:
-  MAX_API_JSON_BYTES: 262144
-  MAX_ASSET_BYTES: 1048576
-  MAX_COMMAND_OUTPUT_BYTES: 65536
-  GIT_CONFIG_PARAMETERS: ""
 
 jobs:
   verify:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    env:
-      GIT_CONFIG_COUNT: "2"
-      GIT_CONFIG_KEY_0: init.defaultBranch
-      GIT_CONFIG_VALUE_0: main
-      GIT_CONFIG_KEY_1: advice.detachedHead
-      GIT_CONFIG_VALUE_1: "false"
-      GIT_CONFIG_NOSYSTEM: "1"
-      GIT_CONFIG_GLOBAL: /dev/null
-      GIT_TERMINAL_PROMPT: "0"
     steps:
       - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Verify GitHub CLI release/API contract
-        run: |
-          set -euo pipefail
-          bounded_help() {
-            local destination="$1" limit="$MAX_COMMAND_OUTPUT_BYTES" extra
-            shift
-            if ! timeout --signal=TERM --kill-after=5s 30s "$@" 2>&1 |
-              {
-                dd iflag=fullblock bs=1 count="$limit" of="$destination" status=none || exit 1
-                extra="$(dd iflag=fullblock bs=1 count=1 status=none | wc -c)" || exit 1
-                cat >/dev/null || exit 1
-                test "$extra" -eq 0
-              }
-            then
-              rm -f -- "$destination"
-              exit 1
-            fi
-          }
-          release_help="$RUNNER_TEMP/gh-release-help"
-          edit_help="$RUNNER_TEMP/gh-release-edit-help"
-          api_help="$RUNNER_TEMP/gh-api-help"
-          bounded_help "$release_help" gh release create --help
-          bounded_help "$edit_help" gh release edit --help
-          bounded_help "$api_help" gh api --help
-          grep -F -- '--repo [HOST/]OWNER/REPO' "$release_help" >/dev/null
-          grep -F -- '--verify-tag' "$edit_help" >/dev/null
-          grep -F -- '--hostname string' "$api_help" >/dev/null
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v7.0.0
+      - uses: actions/setup-node@v7.0.0
         with:
           node-version: "22.23.2"
 
-      - name: Verify canonical assets
-        run: sha256sum --check CHECKSUMS.sha256
+      - name: Verify package and canonical assets
+        run: |
+          set -euo pipefail
+          sha256sum --check CHECKSUMS.sha256
+          npm test -- --test-reporter=spec
 
-      - name: Run package tests
-        run: npm test -- --test-reporter=spec
-
-      - name: Require an exact annotated release tag on refreshed main
+      - name: Bind an exact annotated tag to refreshed main
         if: startsWith(github.ref, 'refs/tags/')
         env:
           RELEASE: ${{ github.ref_name }}
@@ -82,528 +42,231 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          bounded_fetch() {
-            local stdout_destination="$1" stderr_destination="$2" status
-            shift 2
-            set +e
-            (
-              ulimit -f 128
-              timeout --signal=TERM --kill-after=5s 30s "$@" \
-                >"$stdout_destination" 2>"$stderr_destination"
-            )
-            status=$?
-            set -e
-            test "$(wc -c <"$stdout_destination")" -le "$MAX_COMMAND_OUTPUT_BYTES"
-            test "$(wc -c <"$stderr_destination")" -le "$MAX_COMMAND_OUTPUT_BYTES"
-            test "$status" -eq 0
-          }
-          bounded_local_value() {
-            local output="$1" kind="$2" ref="$3"
-            bounded_fetch "$output" "$output.stderr" bash .github/scripts/git_transport.sh \
-              local-read "$kind" "$ref"
-            test ! -s "$output.stderr"
-            tr -d '\r\n' <"$output"
-          }
-          if [[ ! "$RELEASE" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-            echo "release tag must match v<major>.<minor>.<patch> without leading zeroes: $RELEASE" >&2
-            exit 1
-          fi
-          version="$(node -p 'require("./package.json").version')"
-          test "v$version" = "$RELEASE"
-          test "$(bounded_local_value "$RUNNER_TEMP/checkout-tag-type" cat-file-type "$GITHUB_REF")" = tag
-          annotated_tag_sha="$(bounded_local_value "$RUNNER_TEMP/checkout-tag-object" rev-parse "$GITHUB_REF")"
-          [[ "$annotated_tag_sha" =~ ^[0-9a-f]{40}$ ]]
-          remote_tag_ref="refs/remotes/origin/release-tag"
-          git_fetch_output="$RUNNER_TEMP/git-fetch-output"
-          git_fetch_error="$RUNNER_TEMP/git-fetch-error"
-          bounded_fetch "$git_fetch_output" "$git_fetch_error" bash .github/scripts/git_transport.sh fetch "$GITHUB_REPOSITORY" \
-            "refs/tags/$RELEASE:$remote_tag_ref" \
+          [[ "$RELEASE" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          test "$RELEASE" = "v$(node -p 'require("./package.json").version')"
+          git_value() { bash .github/scripts/git_transport.sh local-read "$1" "$2"; }
+          test "$(git_value cat-file-type "$GITHUB_REF")" = tag
+          tag_object="$(git_value rev-parse "$GITHUB_REF")"
+          [[ "$tag_object" =~ ^[0-9a-f]{40}$ ]]
+          bash .github/scripts/git_transport.sh fetch "$GITHUB_REPOSITORY" \
+            "refs/tags/$RELEASE:refs/remotes/origin/release-tag" \
             refs/heads/main:refs/remotes/origin/main
-          if [ -s "$git_fetch_output" ] || [ -s "$git_fetch_error" ]; then
-            cat -- "$git_fetch_output" "$git_fetch_error" >&2
-            echo "git fetch emitted unexpected output" >&2
-            exit 1
-          fi
-          rm -f -- "$git_fetch_output" "$git_fetch_error"
-          test "$(bounded_local_value "$RUNNER_TEMP/remote-tag-type" cat-file-type "$remote_tag_ref")" = tag
-          test "$(bounded_local_value "$RUNNER_TEMP/remote-tag-object" rev-parse "$remote_tag_ref")" = "$annotated_tag_sha"
-          release_commit="$(bounded_local_value "$RUNNER_TEMP/remote-tag-commit" rev-parse "$remote_tag_ref^{commit}")"
+          test "$(git_value cat-file-type refs/remotes/origin/release-tag)" = tag
+          test "$(git_value rev-parse refs/remotes/origin/release-tag)" = "$tag_object"
+          release_commit="$(git_value rev-parse 'refs/remotes/origin/release-tag^{commit}')"
           test "$release_commit" = "$RELEASE_SHA"
-          test "$(bounded_local_value "$RUNNER_TEMP/verify-head" rev-parse HEAD)" = "$RELEASE_SHA"
-          bounded_fetch "$RUNNER_TEMP/ancestor-check" "$RUNNER_TEMP/ancestor-check.stderr" \
-            bash .github/scripts/git_transport.sh local-ancestor "$release_commit" refs/remotes/origin/main
-          test ! -s "$RUNNER_TEMP/ancestor-check"
-          test ! -s "$RUNNER_TEMP/ancestor-check.stderr"
+          test "$(git_value rev-parse HEAD)" = "$RELEASE_SHA"
+          test "$release_commit" = "$(git_value rev-parse refs/remotes/origin/main)"
 
   release:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: verify
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    concurrency:
-      group: shared-ui-release-${{ github.ref_name }}
-      cancel-in-progress: false
     permissions:
       contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE: ${{ github.ref_name }}
+      RELEASE_SHA: ${{ github.sha }}
     steps:
       - uses: actions/checkout@v7.0.1
-        env:
-          GIT_CONFIG_COUNT: "2"
-          GIT_CONFIG_KEY_0: init.defaultBranch
-          GIT_CONFIG_VALUE_0: main
-          GIT_CONFIG_KEY_1: advice.detachedHead
-          GIT_CONFIG_VALUE_1: "false"
-          GIT_CONFIG_NOSYSTEM: "1"
-          GIT_CONFIG_GLOBAL: /dev/null
-          GIT_TERMINAL_PROMPT: "0"
         with:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v7.0.0
+      - uses: actions/setup-node@v7.0.0
         with:
           node-version: "22.23.2"
 
-      - name: Package and publish exact immutable release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE: ${{ github.ref_name }}
-          RELEASE_SHA: ${{ github.sha }}
-          GIT_CONFIG_NOSYSTEM: "1"
-          GIT_CONFIG_GLOBAL: /dev/null
-          GIT_TERMINAL_PROMPT: "0"
+      - name: Package and publish the exact immutable release
         shell: bash
         run: |
           set -euo pipefail
-
           [[ "$RELEASE" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
           [[ "$GITHUB_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
           version="$(node -p 'require("./package.json").version')"
           test "$RELEASE" = "v$version"
-          grep -Fqx '# @telecrypt-io/ui' README.md
-          release_body="Exact shared UI source and distributable for commit $RELEASE_SHA."
 
-          verify_identity() {
-            local current_tag_commit current_tag_object
-            git_fetch_output="$RUNNER_TEMP/git-fetch-output"
-            git_fetch_error="$RUNNER_TEMP/git-fetch-error"
-            bounded_command_to_files_with_timeout 30s "$MAX_COMMAND_OUTPUT_BYTES" \
-              "$git_fetch_output" "$git_fetch_error" bash .github/scripts/git_transport.sh fetch "$GITHUB_REPOSITORY" \
-              "refs/tags/$RELEASE:refs/remotes/origin/release-tag" \
-              refs/heads/main:refs/remotes/origin/main
-            if [ -s "$git_fetch_output" ] || [ -s "$git_fetch_error" ]; then
-              echo "git fetch emitted unexpected output:" >&2
-              cat -- "$git_fetch_output" "$git_fetch_error" >&2
-              rm -f -- "$git_fetch_output" "$git_fetch_error"
-              exit 1
-            fi
-            rm -f -- "$git_fetch_output" "$git_fetch_error"
-            test "$(bounded_local_value "$RUNNER_TEMP/current-tag-type" cat-file-type refs/remotes/origin/release-tag)" = tag
-            current_tag_object="$(bounded_local_value "$RUNNER_TEMP/current-tag-object" rev-parse refs/remotes/origin/release-tag)"
-            if [[ -n "${annotated_tag_sha:-}" ]]; then
-              test "$current_tag_object" = "$annotated_tag_sha"
-            fi
-            current_tag_commit="$(bounded_local_value "$RUNNER_TEMP/current-tag-commit" rev-parse 'refs/remotes/origin/release-tag^{commit}')"
-            test "$current_tag_commit" = "$RELEASE_SHA"
-            test "$current_tag_commit" = "$(bounded_local_value "$RUNNER_TEMP/current-head" rev-parse HEAD)"
-            bounded_local_ancestor "$RUNNER_TEMP/current-ancestor" "$RUNNER_TEMP/current-ancestor.stderr" \
-              "$current_tag_commit" refs/remotes/origin/main
-            test "$(node -p 'require("./package.json").version')" = "$version"
-          }
+          git_value() { bash .github/scripts/git_transport.sh local-read "$1" "$2"; }
+          bash .github/scripts/git_transport.sh fetch "$GITHUB_REPOSITORY" \
+            "refs/tags/$RELEASE:refs/remotes/origin/release-tag" \
+            refs/heads/main:refs/remotes/origin/main
+          test "$(git_value cat-file-type refs/remotes/origin/release-tag)" = tag
+          tag_object="$(git_value rev-parse refs/remotes/origin/release-tag)"
+          [[ "$tag_object" =~ ^[0-9a-f]{40}$ ]]
+          release_commit="$(git_value rev-parse 'refs/remotes/origin/release-tag^{commit}')"
+          test "$release_commit" = "$RELEASE_SHA"
+          test "$release_commit" = "$(git_value rev-parse HEAD)"
+          test "$release_commit" = "$(git_value rev-parse refs/remotes/origin/main)"
+          release_body="Exact shared UI source and distributable for commit $RELEASE_SHA (annotated tag $tag_object)."
 
-          bounded_capture() {
-            local input="$1" destination="$2" limit="$3" extra
-            dd iflag=fullblock bs=1 count="$limit" if="$input" of="$destination" status=none || return 1
-            extra="$(dd iflag=fullblock bs=1 count=1 if="$input" status=none | wc -c)" || return 1
-            cat <"$input" >/dev/null || return 1
-            test "$extra" -eq 0
-          }
-          bounded_command_to_files_with_timeout() {
-            local timeout_duration="$1" limit="$2" stdout_destination="$3" stderr_destination="$4"
-            local fifo_dir stdout_fifo stderr_fifo command_status stdout_status stderr_status
-            shift 4
-            fifo_dir="$(mktemp -d "$RUNNER_TEMP/bounded-command.XXXXXX")"
-            stdout_fifo="$fifo_dir/stdout"
-            stderr_fifo="$fifo_dir/stderr"
-            mkfifo "$stdout_fifo" "$stderr_fifo"
-            bounded_capture "$stdout_fifo" "$stdout_destination" "$limit" &
-            stdout_pid=$!
-            bounded_capture "$stderr_fifo" "$stderr_destination" "$limit" &
-            stderr_pid=$!
+          bounded_command() {
+            local max_stdout="$1" max_stderr="$2" max_file="$3" output="$4" stderr="$5" timeout_seconds="$6" status
+            shift 6
+            rm -f -- "$output" "$stderr"
             set +e
-            timeout --signal=TERM --kill-after=5s "$timeout_duration" "$@" \
-              >"$stdout_fifo" 2>"$stderr_fifo"
-            command_status=$?
-            wait "$stdout_pid"
-            stdout_status=$?
-            wait "$stderr_pid"
-            stderr_status=$?
+            bash .github/scripts/bounded-command.sh "$max_stdout" "$max_stderr" \
+              "$output" "$stderr" "$timeout_seconds" "$@"
+            status=$?
             set -e
-            rm -f -- "$stdout_fifo" "$stderr_fifo"
-            rmdir -- "$fifo_dir"
-            if [ "$command_status" -ne 0 ] || [ "$stdout_status" -ne 0 ] || [ "$stderr_status" -ne 0 ]; then
-              echo "bounded command failed (exit $command_status)" >&2
-              if [ -s "$stderr_destination" ]; then
-                cat -- "$stderr_destination" >&2
-              fi
+            test "$(wc -c <"$output")" -le "$max_stdout"
+            test "$(wc -c <"$stderr")" -le "$max_stderr"
+            test "$(wc -c <"$output")" -le "$max_file"
+            if [[ "$status" -eq 0 && -s "$stderr" ]]; then
+              cat -- "$stderr" >&2
               return 1
             fi
-          }
-          bounded_command_to_files() {
-            bounded_command_to_files_with_timeout 120s "$@"
-          }
-          bounded_command_to_file_with_timeout() {
-            local timeout_duration="$1" limit="$2" destination="$3"
-            local stdout_destination="$destination.stdout" stderr_destination="$destination.stderr"
-            shift 3
-            rm -f -- "$stdout_destination" "$stderr_destination"
-            if ! bounded_command_to_files_with_timeout "$timeout_duration" "$limit" \
-              "$stdout_destination" "$stderr_destination" "$@"; then
-              rm -f -- "$stdout_destination" "$stderr_destination"
-              return 1
-            fi
-            if [ -s "$stderr_destination" ]; then
-              echo "bounded command emitted unexpected stderr:" >&2
-              cat -- "$stderr_destination" >&2
-              rm -f -- "$stdout_destination" "$stderr_destination"
-              return 1
-            fi
-            mv -- "$stdout_destination" "$destination"
-            rm -f -- "$stderr_destination"
-          }
-          bounded_command_to_file() {
-            bounded_command_to_file_with_timeout 120s "$@"
-          }
-          bounded_local_value() {
-            local output="$1" kind="$2" ref="$3"
-            bounded_command_to_file_with_timeout 30s "$MAX_COMMAND_OUTPUT_BYTES" "$output" \
-              bash .github/scripts/git_transport.sh local-read "$kind" "$ref"
-            tr -d '\r\n' <"$output"
-          }
-          bounded_local_ancestor() {
-            local output="$1" error="$2" commit="$3" ancestor="$4"
-            bounded_command_to_files_with_timeout 30s "$MAX_COMMAND_OUTPUT_BYTES" \
-              "$output" "$error" bash .github/scripts/git_transport.sh local-ancestor "$commit" "$ancestor"
-            test ! -s "$output"
-            test ! -s "$error"
-          }
-          gh_bounded_to_files() {
-            local limit="$1" stdout_destination="$2" stderr_destination="$3"
-            shift 3
-            bounded_command_to_files "$limit" "$stdout_destination" "$stderr_destination" gh "$@"
-          }
-          gh_bounded_to_file() {
-            local limit="$1" destination="$2"
-            shift 2
-            bounded_command_to_file "$limit" "$destination" gh "$@"
+            return "$status"
           }
 
-          test "$RELEASE_SHA" = "$(bounded_local_value "$RUNNER_TEMP/package-head" rev-parse HEAD)"
-          test "$(bounded_local_value "$RUNNER_TEMP/release-tag-type" cat-file-type "$GITHUB_REF")" = tag
-          annotated_tag_sha="$(bounded_local_value "$RUNNER_TEMP/release-tag-object" rev-parse "$GITHUB_REF")"
-          [[ "$annotated_tag_sha" =~ ^[0-9a-f]{40}$ ]]
-          verify_identity
+          http_status() {
+            local count
+            count="$(grep -Ec '^HTTP/[0-9.]+[[:space:]][0-9]{3}([[:space:]]|$)' "$1")"
+            test "$count" -eq 1
+            sed -n '1s/^HTTP\/[0-9.]*[[:space:]]\([0-9][0-9][0-9]\).*$/\1/p' "$1"
+          }
+
+          http_body() {
+            awk 'BEGIN { body = 0 } { line = $0; sub(/\r$/, "", line); if (!body) { if (line == "") body = 1; next } print }' "$1"
+          }
 
           pack_json="$RUNNER_TEMP/npm-pack.json"
-          test "$((MAX_ASSET_BYTES % 512))" -eq 0
-          pack_file_limit_blocks="$(( MAX_ASSET_BYTES / 512 ))"
-          # shellcheck disable=SC2016 # The inner shell must expand its positional arguments.
-          bounded_command_to_file "$MAX_API_JSON_BYTES" "$pack_json" bash -c \
-            'ulimit -f "$1"; shift; exec "$@"' -- "$pack_file_limit_blocks" npm pack \
-            --ignore-scripts --pack-destination "$RUNNER_TEMP" --json
-          package_name="$(node -e 'const data=require(process.argv[1]); if (!Array.isArray(data) || data.length !== 1) process.exit(1); process.stdout.write(data[0].filename);' "$pack_json")"
+          pack_error="$RUNNER_TEMP/npm-pack.error"
+          bounded_command $((1024 * 1024)) $((64 * 1024)) $((64 * 1024 * 1024)) \
+            "$pack_json" "$pack_error" 120 npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP" --json
+          package_name="$(node -e 'const d=require(process.argv[1]); if (!Array.isArray(d) || d.length !== 1) process.exit(1); process.stdout.write(d[0].filename)' "$pack_json")"
           expected_package="telecrypt-io-ui-$version.tgz"
           test "$package_name" = "$expected_package"
           node -e '
-            const data = require(process.argv[1]);
-            const files = data[0].files.map(({path}) => path).sort();
-            const expected = ["LICENSE", "README.md", "assets/logo-mark.png", "package.json", "src/product.css"];
-            if (JSON.stringify(files) !== JSON.stringify(expected)) process.exit(1);
+            const d=require(process.argv[1]);
+            const files=d[0].files.map(({path})=>path).sort();
+            const expected=["LICENSE","README.md","assets/logo-mark.png","package.json","src/product.css"];
+            if (JSON.stringify(files)!==JSON.stringify(expected)) process.exit(1);
           ' "$pack_json"
           package_path="$RUNNER_TEMP/$package_name"
           test -f "$package_path"
-
-          package_size="$(wc -c < "$package_path")"
-          test "$package_size" -gt 0
-          test "$package_size" -le "$MAX_ASSET_BYTES"
+          package_size="$(wc -c <"$package_path")"
+          test "$package_size" -gt 0 -a "$package_size" -le $((64 * 1024 * 1024))
           package_digest="sha256:$(sha256sum "$package_path" | awk '{print $1}')"
 
+          # Re-fetch the source identity after packaging. A tag run is publishable only when
+          # the annotated tag still names this commit and the remote main branch is still this
+          # exact commit; ancestry is insufficient for a release boundary.
+          bash .github/scripts/git_transport.sh fetch "$GITHUB_REPOSITORY" \
+            "refs/tags/$RELEASE:refs/remotes/origin/release-tag" \
+            refs/heads/main:refs/remotes/origin/main
+          test "$(git_value cat-file-type refs/remotes/origin/release-tag)" = tag
+          test "$(git_value rev-parse refs/remotes/origin/release-tag)" = "$tag_object"
+          test "$(git_value rev-parse refs/remotes/origin/release-tag^{commit})" = "$RELEASE_SHA"
+          test "$(git_value rev-parse refs/remotes/origin/main)" = "$RELEASE_SHA"
+
           release_json="$RUNNER_TEMP/release.json"
-          probe_existing_release() {
-            local response_file="$1" stderr_file="$2" body_file="$3" command_status=0 http_status
-            gh_bounded_to_files "$MAX_API_JSON_BYTES" "$response_file" "$stderr_file" api --include \
-              --hostname github.com \
+          release_error="$RUNNER_TEMP/release.error"
+          release_headers="$RUNNER_TEMP/release.headers"
+          get_release() {
+            local command_status code
+            set +e
+            bounded_command $((1024 * 1024)) $((64 * 1024)) $((1024 * 1024)) \
+              "$release_headers" "$release_error" 30 gh api --include --hostname github.com \
               --header 'Accept: application/vnd.github+json' \
               --header 'X-GitHub-Api-Version: 2026-03-10' \
-              "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE" || command_status=$?
-            test -s "$response_file"
-            http_status="$(sed -nE 's/^HTTP\/[0-9.]+[[:space:]]+([0-9]{3})([[:space:]].*)?$/\1/p' "$response_file" | tail -n1)"
-            case "$http_status" in
-              404)
-                test "$command_status" -eq 1
-                test "$(wc -c <"$response_file")" -le "$MAX_API_JSON_BYTES"
-                test "$(wc -l <"$stderr_file")" -eq 1
-                expected_404_error="gh: HTTP 404: Not Found (https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE)"
-                test "$(cat -- "$stderr_file")" = "$expected_404_error"
-                grep -Eq '^HTTP/[0-9.]+ 404 Not Found$' < <(sed 's/\r$//' "$response_file")
-                awk '
-                  BEGIN { body = 0; found = 0 }
-                  { sub(/\r$/, "") }
-                  !body && $0 == "" { body = 1; next }
-                  body { print; found = 1 }
-                  END { if (!body || !found) exit 1 }
-                ' "$response_file" >"$body_file"
-                jq -e --arg documentation_url 'https://docs.github.com/rest/releases/releases#get-a-release-by-tag-name' \
-                  'type == "object" and (keys | sort) == ["documentation_url", "message"] and
-                   .message == "Not Found" and .documentation_url == $documentation_url' \
-                  "$body_file" >/dev/null
-                rm -f -- "$response_file" "$stderr_file" "$body_file"
-                return 2
-                ;;
+              "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE"
+            command_status=$?
+            set -e
+            code="$(http_status "$release_headers")"
+            case "$code" in
               200)
                 test "$command_status" -eq 0
-                test ! -s "$stderr_file"
-                awk '
-                  BEGIN { body = 0; found = 0 }
-                  { sub(/\r$/, "") }
-                  !body && $0 == "" { body = 1; next }
-                  body { print; found = 1 }
-                  END { if (!body || !found) exit 1 }
-                ' "$response_file" >"$body_file"
-                rm -f -- "$response_file" "$stderr_file"
+                test ! -s "$release_error"
+                http_body "$release_headers" >"$release_json"
+                test "$(wc -c <"$release_json")" -le $((1024 * 1024))
+                return 0
+                ;;
+              404)
+                test "$command_status" -ne 0
+                return 4
                 ;;
               *)
-                cat -- "$response_file" "$stderr_file" >&2
-                rm -f -- "$response_file" "$stderr_file" "$body_file"
-                echo "unexpected release lookup status: $http_status" >&2
+                cat -- "$release_error" >&2
                 return 1
                 ;;
             esac
           }
-          # The tag lookup endpoint intentionally omits drafts. Enumerate the authenticated
-          # release list with a small page cap so a prior draft can be resumed, while a full
-          # final page at the cap fails closed rather than treating an unseen release as absent.
-          probe_release_list() {
-            local metadata_file="$1" page=1 page_count match_count=0 page_match_count
-            local response_file="$RUNNER_TEMP/release-list-response"
-            local response_error="$RUNNER_TEMP/release-list-error"
-            local body_file="$RUNNER_TEMP/release-list-body"
-            local matches_file="$RUNNER_TEMP/release-list-matches"
-            local command_status http_status
-            rm -f -- "$metadata_file" "$response_file" "$response_error" "$body_file" "$matches_file"
-            while [ "$page" -le 10 ]; do
-              command_status=0
-              gh_bounded_to_files "$MAX_API_JSON_BYTES" "$response_file" "$response_error" api --include \
-                --hostname github.com \
-                --header 'Accept: application/vnd.github+json' \
-                --header 'X-GitHub-Api-Version: 2026-03-10' \
-                "repos/$GITHUB_REPOSITORY/releases?per_page=100&page=$page" || command_status=$?
-              test "$command_status" -eq 0
-              test -s "$response_file"
-              test ! -s "$response_error"
-              test "$(wc -c <"$response_file")" -le "$MAX_API_JSON_BYTES"
-              http_status="$(sed -nE 's/^HTTP\/[0-9.]+[[:space:]]+([0-9]{3})([[:space:]].*)?$/\1/p' "$response_file" | tail -n1)"
-              test "$http_status" = 200
-              awk '
-                BEGIN { body = 0; found = 0 }
-                { sub(/\r$/, "") }
-                !body && $0 == "" { body = 1; next }
-                body { print; found = 1 }
-                END { if (!body || !found) exit 1 }
-              ' "$response_file" >"$body_file"
-              jq -e 'type == "array" and length <= 100' "$body_file" >/dev/null
-              page_count="$(jq -er 'length' "$body_file")"
-              jq -c --arg tag "$RELEASE" '[.[] | select(.tag_name == $tag)]' "$body_file" >"$matches_file"
-              test "$(wc -c <"$matches_file")" -le "$MAX_API_JSON_BYTES"
-              page_match_count="$(jq -er 'length' "$matches_file")"
-              match_count=$((match_count + page_match_count))
-              test "$match_count" -le 1
-              if [ "$page_match_count" -eq 1 ]; then
-                jq -c '.[0]' "$matches_file" >"$metadata_file"
-              fi
-              if [ "$page_count" -lt 100 ]; then
-                rm -f -- "$response_file" "$response_error" "$body_file" "$matches_file"
-                if [ "$match_count" -eq 1 ]; then
-                  return 0
-                fi
-                return 2
-              fi
-              page=$((page + 1))
-            done
-            echo "release list reached its bounded page cap; refusing to assume tag absence" >&2
-            rm -f -- "$response_file" "$response_error" "$body_file" "$matches_file" "$metadata_file"
-            return 1
+          check_draft() {
+            jq -e --arg tag "$RELEASE" --arg body "$release_body" --arg tag_object "$tag_object" --arg asset "$package_name" '
+              type == "object" and (.id|type == "number") and .tag_name == $tag and
+              .name == $tag and .body == $body and (.body | contains($tag_object)) and .draft == true and .prerelease == false and
+              (.assets|type == "array" and length <= 1) and
+              ((.assets|length) == 0 or
+                ((.assets|length) == 1 and .assets[0].name == $asset and
+                 .assets[0].state == "uploaded" and
+                 (.assets[0].id|type == "number") and (.assets[0].size|type == "number")))
+            ' "$release_json" >/dev/null
           }
-          verify_release_metadata() {
-            local metadata_file="$1" expected_draft="$2" expected_immutable="$3" require_published="$4" \
-              expected_created_at="${5:-}" expected_asset_created_at="${6:-}" expected_asset_updated_at="${7:-}"
-            jq -e --arg tag "$RELEASE" \
-              --arg package "$package_name" --arg digest "$package_digest" \
-              --arg body "$release_body" --arg created_at "$expected_created_at" \
-              --arg asset_created_at "$expected_asset_created_at" --arg asset_updated_at "$expected_asset_updated_at" \
-              --arg repository "$GITHUB_REPOSITORY" --argjson size "$package_size" --argjson max_size "$MAX_ASSET_BYTES" \
-              --argjson expected_draft "$expected_draft" --argjson expected_immutable "$expected_immutable" \
-              --argjson require_published "$require_published" '
-                def valid_time:
-                  type == "string" and
-                  test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$") and
-                  (try (sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601 | type == "number") catch false);
-                def epoch:
-                  try (sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) catch null;
-                (.id | type == "number" and . > 0 and floor == .) and
-                .tag_name == $tag and
-                .name == $tag and
-                .body == $body and
-                (.url == ("https://api.github.com/repos/" + $repository + "/releases/" + (.id | tostring))) and
-                (.assets_url == ("https://api.github.com/repos/" + $repository + "/releases/" + (.id | tostring) + "/assets")) and
-                (.upload_url == ("https://uploads.github.com/repos/" + $repository + "/releases/" + (.id | tostring) + "/assets{?name,label}")) and
-                ((.html_url == ("https://github.com/" + $repository + "/releases/tag/" + $tag)) or
-                 (.html_url == ("https://github.com/" + $repository + "/releases/" + $tag))) and
-                (.created_at | valid_time) and
-                (if $created_at == "" then true else .created_at == $created_at end) and
-                (.tarball_url == ("https://api.github.com/repos/" + $repository + "/tarball/" + $tag)) and
-                (.zipball_url == ("https://api.github.com/repos/" + $repository + "/zipball/" + $tag)) and
-                (if $require_published then (.published_at | valid_time) else .published_at == null end) and
-                .draft == $expected_draft and
-                .prerelease == false and
-                .immutable == $expected_immutable and
-                (.assets | length) == 1 and
-                .assets[0].name == $package and
-                .assets[0].label == null and
-                (.assets[0].id | type == "number" and . > 0 and floor == .) and
-                (.assets[0].url == ("https://api.github.com/repos/" + $repository + "/releases/assets/" + (.assets[0].id | tostring))) and
-                .assets[0].state == "uploaded" and
-                (.assets[0].size | type == "number" and . > 0 and floor == . and . <= $max_size) and
-                .assets[0].size == $size and
-                .assets[0].browser_download_url == ("https://github.com/" + $repository + "/releases/download/" + $tag + "/" + $package) and
-                .assets[0].digest == $digest and
-                (.assets[0].created_at | valid_time) and
-                (if $asset_created_at == "" then true else .assets[0].created_at == $asset_created_at end) and
-                (.assets[0].updated_at | valid_time) and
-                (if $asset_updated_at == "" then true else .assets[0].updated_at == $asset_updated_at end) and
-                ((.assets[0].created_at | epoch) >= (.created_at | epoch)) and
-                ((.assets[0].updated_at | epoch) >= (.assets[0].created_at | epoch)) and
-                (if $require_published then
-                  ((.published_at | epoch) >= (.created_at | epoch)) and
-                  ((.published_at | epoch) >= (.assets[0].updated_at | epoch))
-                else true end)
-              ' "$metadata_file" >/dev/null
-          }
-
-          load_release_fields() {
-            local metadata_file="$1"
-            release_id="$(jq -er '.id | select(type == "number" and . > 0 and floor == .)' "$metadata_file")"
-            asset_id="$(jq -er '.assets[0].id | select(type == "number" and . > 0 and floor == .)' "$metadata_file")"
-            release_created_at="$(jq -er '.created_at | select(type == "string" and length > 0)' "$metadata_file")"
-            asset_created_at="$(jq -er '.assets[0].created_at | select(type == "string" and length > 0)' "$metadata_file")"
-            asset_updated_at="$(jq -er '.assets[0].updated_at | select(type == "string" and length > 0)' "$metadata_file")"
-          }
-
-          release_probe="$RUNNER_TEMP/release-probe"
-          release_probe_error="$RUNNER_TEMP/release-probe-error"
-          release_state="missing"
-          if probe_existing_release "$release_probe" "$release_probe_error" "$release_json"; then
-            release_state="$(jq -er 'if .draft == true then "draft" elif .draft == false then "final" else empty end' "$release_json")"
+          if get_release; then
+            check_draft
           else
-            probe_status=$?
-            test "$probe_status" -eq 2
-            list_status=0
-            probe_release_list "$release_json" || list_status=$?
-            case "$list_status" in
-              0) release_state="$(jq -er 'if .draft == true then "draft" elif .draft == false then "final" else empty end' "$release_json")" ;;
-              2) release_state=missing ;;
-              *) exit 1 ;;
-            esac
+            status=$?
+            test "$status" = 4
+            set +e
+            bounded_command $((64 * 1024)) $((64 * 1024)) $((64 * 1024)) \
+              "$RUNNER_TEMP/release-create.log" "$RUNNER_TEMP/release-create.error" 60 \
+              gh release create "$RELEASE" --repo "github.com/$GITHUB_REPOSITORY" --draft \
+              --verify-tag --title "$RELEASE" --notes "$release_body"
+            set -e
+            # A timed-out create may have succeeded. Continue only after the exact draft can be
+            # re-fetched; any published or ambiguous record remains a hard failure.
+            get_release || exit 1
+            test ! -s "$RUNNER_TEMP/release-create.error"
+            check_draft
           fi
-
-          if [ "$release_state" = missing ]; then
-            # Recheck source, refreshed main, annotated tag, and package version immediately
-            # before creating the draft. The protected-tag prerequisite prevents tag movement
-            # by unauthorized actors, while these checks still fail closed on any observed move.
-            verify_identity
-            release_create_output="$RUNNER_TEMP/gh-release-create"
-            release_create_error="$RUNNER_TEMP/gh-release-create-error"
-            bounded_command_to_files "$MAX_API_JSON_BYTES" "$release_create_output" "$release_create_error" gh release create \
-              "$RELEASE" "$package_path" \
-              --repo "github.com/$GITHUB_REPOSITORY" \
-              --draft \
-              --verify-tag \
-              --title "$RELEASE" \
-              --notes "$release_body"
-            if [ -s "$release_create_error" ]; then
-              cat -- "$release_create_error" >&2
-              echo "gh release create emitted unexpected stderr" >&2
-              exit 1
-            fi
-            if [ "$(cat -- "$release_create_output")" != "https://github.com/$GITHUB_REPOSITORY/releases/tag/$RELEASE" ]; then
-              cat -- "$release_create_output" >&2
-              echo "gh release create emitted unexpected stdout" >&2
-              exit 1
-            fi
-            test "$(wc -l <"$release_create_output")" -eq 1
-            rm -f -- "$release_create_output" "$release_create_error"
-            list_status=0
-            probe_release_list "$release_json" || list_status=$?
-            test "$list_status" -eq 0
-            release_state="$(jq -er 'if .draft == true then "draft" elif .draft == false then "final" else empty end' "$release_json")"
-            test "$release_state" = draft
+          asset_count="$(jq -er '.assets|length' "$release_json")"
+          if [[ "$asset_count" -eq 0 ]]; then
+            set +e
+            bounded_command $((64 * 1024)) $((64 * 1024)) $((64 * 1024)) \
+              "$RUNNER_TEMP/release-upload.log" "$RUNNER_TEMP/release-upload.error" 120 \
+              gh release upload "$RELEASE" "$package_path" --repo "github.com/$GITHUB_REPOSITORY"
+            upload_status=$?
+            set -e
+            test ! -s "$RUNNER_TEMP/release-upload.error"
+            get_release
           fi
-
-          load_release_fields "$release_json"
-          if [ "$release_state" = final ]; then
-            verify_release_metadata "$release_json" false true true "$release_created_at" "$asset_created_at" "$asset_updated_at"
-          else
-            verify_release_metadata "$release_json" true false false "$release_created_at" "$asset_created_at" "$asset_updated_at"
-          fi
-
-          final_dir="$RUNNER_TEMP/final-release"
-          mkdir -p "$final_dir"
-          gh_bounded_to_file "$package_size" "$final_dir/$package_name" api \
-            --hostname github.com \
-            --header 'Accept: application/octet-stream' \
+          get_release
+          check_draft
+          asset_id="$(jq -er --arg asset "$package_name" '.assets | select(length == 1) | .[0] | select(.name == $asset) | .id' "$release_json")"
+          downloaded="$RUNNER_TEMP/$package_name"
+          bounded_command "$((64 * 1024 * 1024))" $((64 * 1024)) $((64 * 1024 * 1024)) \
+            "$downloaded" "$RUNNER_TEMP/release-download.error" 120 \
+            gh api --hostname github.com --header 'Accept: application/octet-stream' \
             --header 'X-GitHub-Api-Version: 2026-03-10' \
             "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"
-          cmp -- "$package_path" "$final_dir/$package_name"
-          test "$(wc -c < "$final_dir/$package_name")" = "$package_size"
-          test "sha256:$(sha256sum "$final_dir/$package_name" | awk '{print $1}')" = "$package_digest"
-
-          if [ "$release_state" = final ]; then
-            verify_identity
-            echo "exact immutable release already exists; verified without mutation"
-            exit 0
+          test "$(wc -c <"$downloaded")" -le "$package_size"
+          cmp "$package_path" "$downloaded"
+          test "$(wc -c <"$downloaded")" = "$package_size"
+          test "$(sha256sum "$downloaded" | awk '{print "sha256:"$1}')" = "$package_digest"
+          if [[ "${upload_status:-0}" -ne 0 ]]; then
+            test ! -s "$RUNNER_TEMP/release-upload.error"
           fi
-
-          # Publish only after the draft Release metadata and exact downloaded bytes have passed.
-          verify_identity
-          release_publish_output="$RUNNER_TEMP/gh-release-publish"
-          release_publish_error="$RUNNER_TEMP/gh-release-publish-error"
-          bounded_command_to_files "$MAX_API_JSON_BYTES" "$release_publish_output" "$release_publish_error" gh release edit \
-            "$RELEASE" \
-            --repo "github.com/$GITHUB_REPOSITORY" \
-            --tag "$RELEASE" \
-            --draft=false \
-            --verify-tag \
-            --title "$RELEASE"
-          expected_release_url="https://github.com/$GITHUB_REPOSITORY/releases/tag/$RELEASE"
-          test "$(cat -- "$release_publish_output")" = "$expected_release_url"
-          test "$(wc -l <"$release_publish_output")" -eq 1
-          if [ -s "$release_publish_error" ]; then
-            cat -- "$release_publish_error" >&2
-            echo "gh release edit emitted unexpected stderr" >&2
-            exit 1
+          set +e
+          bounded_command $((64 * 1024)) $((64 * 1024)) $((64 * 1024)) \
+            "$RUNNER_TEMP/release-edit.log" "$RUNNER_TEMP/release-edit.error" 60 \
+            gh release edit "$RELEASE" --repo "github.com/$GITHUB_REPOSITORY" \
+            --draft=false --verify-tag --title "$RELEASE" --notes "$release_body"
+          edit_status=$?
+          set -e
+          test ! -s "$RUNNER_TEMP/release-edit.error"
+          get_release
+          jq -e --arg tag "$RELEASE" --arg body "$release_body" --arg tag_object "$tag_object" --arg asset "$package_name" \
+            --arg digest "$package_digest" --argjson size "$package_size" '
+              type == "object" and (.id|type == "number") and .tag_name == $tag and
+              .name == $tag and .body == $body and (.body | contains($tag_object)) and .draft == false and
+              .prerelease == false and .immutable == true and
+              (.assets|type == "array" and length == 1) and
+              .assets[0].name == $asset and .assets[0].state == "uploaded" and
+              (.assets[0].id|type == "number") and .assets[0].size == $size and
+              .assets[0].digest == $digest
+            ' "$release_json" >/dev/null
+          if [[ "$edit_status" -ne 0 ]]; then
+            test ! -s "$RUNNER_TEMP/release-edit.error"
           fi
-          rm -f -- "$release_publish_output" "$release_publish_error"
-
-          final_release_json="$RUNNER_TEMP/final-release.json"
-          gh_bounded_to_file "$MAX_API_JSON_BYTES" "$final_release_json" api \
-            --hostname github.com \
-            --header 'Accept: application/vnd.github+json' \
-            --header 'X-GitHub-Api-Version: 2026-03-10' \
-            "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE"
-          test "$(wc -c < "$final_release_json")" -le "$MAX_API_JSON_BYTES"
-          verify_release_metadata "$final_release_json" false true true \
-            "$release_created_at" "$asset_created_at" "$asset_updated_at"
-          test "$(jq -er '.id' "$final_release_json")" = "$release_id"
-          test "$(jq -er '.assets[0].id' "$final_release_json")" = "$asset_id"
-          verify_identity
