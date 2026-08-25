@@ -121,17 +121,6 @@ jobs:
             return "$status"
           }
 
-          http_status() {
-            local count
-            count="$(grep -Ec '^HTTP/[0-9.]+[[:space:]][0-9]{3}([[:space:]]|$)' "$1")"
-            test "$count" -eq 1
-            sed -n '1s/^HTTP\/[0-9.]*[[:space:]]\([0-9][0-9][0-9]\).*$/\1/p' "$1"
-          }
-
-          http_body() {
-            awk 'BEGIN { body = 0 } { line = $0; sub(/\r$/, "", line); if (!body) { if (line == "") body = 1; next } print }' "$1"
-          }
-
           pack_json="$RUNNER_TEMP/npm-pack.json"
           pack_error="$RUNNER_TEMP/npm-pack.error"
           bounded_command $((1024 * 1024)) $((64 * 1024)) $((64 * 1024 * 1024)) \
@@ -165,36 +154,53 @@ jobs:
           test "$(git_value rev-parse refs/remotes/origin/main)" = "$RELEASE_SHA"
 
           release_json="$RUNNER_TEMP/release.json"
+          release_pages_json="$RUNNER_TEMP/releases.ndjson"
+          release_list_json="$RUNNER_TEMP/releases.json"
           release_error="$RUNNER_TEMP/release.error"
-          release_headers="$RUNNER_TEMP/release.headers"
           get_release() {
-            local command_status code
+            local command_status
+            rm -f -- "$release_json" "$release_pages_json" "$release_list_json"
             set +e
+            # Follow every API page; the bounded output and JSON reconstruction fail closed if
+            # the complete release inventory cannot be collected within the input limit.
             bounded_command $((1024 * 1024)) $((64 * 1024)) $((1024 * 1024)) \
-              "$release_headers" "$release_error" 30 gh api --include --hostname github.com \
+              "$release_pages_json" "$release_error" 30 gh api --paginate --hostname github.com \
               --header 'Accept: application/vnd.github+json' \
               --header 'X-GitHub-Api-Version: 2026-03-10' \
-              "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE"
+              --jq '.[]' "repos/$GITHUB_REPOSITORY/releases?per_page=100"
             command_status=$?
             set -e
-            code="$(http_status "$release_headers")"
-            case "$code" in
-              200)
-                test "$command_status" -eq 0
-                test ! -s "$release_error"
-                http_body "$release_headers" >"$release_json"
-                test "$(wc -c <"$release_json")" -le $((1024 * 1024))
-                return 0
-                ;;
-              404)
-                test "$command_status" -ne 0
-                return 4
-                ;;
-              *)
-                cat -- "$release_error" >&2
-                return 1
-                ;;
-            esac
+            if [[ "$command_status" -ne 0 || -s "$release_error" ]]; then
+              cat -- "$release_error" >&2
+              return 1
+            fi
+            test "$(wc -c <"$release_pages_json")" -le $((1024 * 1024))
+            if ! jq -s '.' "$release_pages_json" >"$release_list_json"; then
+              return 1
+            fi
+            test "$(wc -c <"$release_list_json")" -le $((1024 * 1024))
+            if ! jq --arg tag "$RELEASE" --arg body "$release_body" '
+              if type != "array" then error("release list is not an array")
+              else
+                [.[] | select(.tag_name == $tag)] as $matches |
+                ($matches | map(select(.draft == false))) as $published |
+                ($matches | map(select(.draft == true))) as $drafts |
+                if ($published | length) > 0 then
+                  if ($published | length) == 1 and ($drafts | length) == 0 then $published[0]
+                  else error("ambiguous release records")
+                  end
+                elif ($drafts | length) == 0 then empty
+                elif ($drafts | length) != 1 then error("ambiguous draft releases")
+                elif $drafts[0].name != $tag or $drafts[0].body != $body or $drafts[0].prerelease != false then
+                  error("draft release metadata does not match")
+                else $drafts[0]
+                end
+              end
+            ' "$release_list_json" >"$release_json"; then
+              return 1
+            fi
+            [[ -s "$release_json" ]] || return 4
+            return 0
           }
           check_draft() {
             jq -e --arg tag "$RELEASE" --arg body "$release_body" --arg tag_object "$tag_object" --arg asset "$package_name" '
@@ -247,14 +253,21 @@ jobs:
             release_state='draft'
           fi
           if [[ "$release_state" == draft ]]; then
+            release_id="$(jq -er '.id | select(type == "number")' "$release_json")"
             asset_count="$(jq -er '.assets|length' "$release_json")"
             if [[ "$asset_count" -eq 0 ]]; then
               set +e
               bounded_command $((64 * 1024)) $((64 * 1024)) $((64 * 1024)) \
                 "$RUNNER_TEMP/release-upload.log" "$RUNNER_TEMP/release-upload.error" 120 \
-                gh release upload "$RELEASE" "$package_path" --repo "github.com/$GITHUB_REPOSITORY"
+                gh api --hostname uploads.github.com --method POST \
+                --header 'Accept: application/vnd.github+json' \
+                --header 'Content-Type: application/octet-stream' \
+                --header 'X-GitHub-Api-Version: 2026-03-10' \
+                --input "$package_path" \
+                "repos/$GITHUB_REPOSITORY/releases/$release_id/assets?name=$package_name"
               upload_status=$?
               set -e
+              test "$upload_status" -eq 0
               test ! -s "$RUNNER_TEMP/release-upload.error"
             fi
             get_release
@@ -275,10 +288,14 @@ jobs:
             set +e
             bounded_command $((64 * 1024)) $((64 * 1024)) $((64 * 1024)) \
               "$RUNNER_TEMP/release-edit.log" "$RUNNER_TEMP/release-edit.error" 60 \
-              gh release edit "$RELEASE" --repo "github.com/$GITHUB_REPOSITORY" \
-              --draft=false --verify-tag --title "$RELEASE" --notes "$release_body"
+              gh api --hostname github.com --method PATCH \
+              --header 'Accept: application/vnd.github+json' \
+              --header 'X-GitHub-Api-Version: 2026-03-10' \
+              --field draft=false --field name="$RELEASE" --field body="$release_body" \
+              "repos/$GITHUB_REPOSITORY/releases/$release_id"
             edit_status=$?
             set -e
+            test "$edit_status" -eq 0
             test ! -s "$RUNNER_TEMP/release-edit.error"
             get_release
           fi
