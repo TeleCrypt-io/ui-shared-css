@@ -12,7 +12,7 @@ const transportSource = fs.readFileSync(transport, "utf8");
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
 
 assert.equal(packageJson.name, "@telecrypt-io/ui");
-assert.equal(packageJson.version, "0.1.4");
+assert.equal(packageJson.version, "0.1.5");
 assert.equal(packageJson.private, true);
 assert.deepEqual(Object.keys(packageJson.exports).sort(), ["./logo-mark.png", "./product.css"]);
 assert.deepEqual(packageJson.dependencies ?? {}, {});
@@ -36,9 +36,9 @@ try {
   runGit(repo, "init", "--quiet");
   runGit(repo, "-c", "user.email=test@example.invalid", "-c", "user.name=Test", "commit", "--allow-empty", "--quiet", "-m", "first");
   const head = runGit(repo, "rev-parse", "HEAD");
-  runGit(repo, "-c", "user.email=test@example.invalid", "-c", "user.name=Test", "tag", "-a", "v0.1.4", "-m", "release");
-  const annotatedTagObject = runGit(repo, "rev-parse", "refs/tags/v0.1.4");
-  const annotatedTagCommit = runGit(repo, "rev-parse", "refs/tags/v0.1.4^{}");
+  runGit(repo, "-c", "user.email=test@example.invalid", "-c", "user.name=Test", "tag", "-a", "v0.1.5", "-m", "release");
+  const annotatedTagObject = runGit(repo, "rev-parse", "refs/tags/v0.1.5");
+  const annotatedTagCommit = runGit(repo, "rev-parse", "refs/tags/v0.1.5^{}");
   assert.notEqual(annotatedTagObject, annotatedTagCommit);
   assert.equal(annotatedTagCommit, head);
   const local = spawnSync("bash", [transport, "local-read", "rev-parse", "HEAD"], {
@@ -123,6 +123,11 @@ assert.match(workflow, /tag_object=.*rev-parse/);
 assert.doesNotMatch(workflow, /rev-parse refs\/remotes\/origin\/release-tag\^\{\}\).*rev-parse/);
 assert.match(workflow, /annotated tag \$tag_object/);
 assert.match(workflow, /npm pack/);
+assert.match(workflow, /id: package/);
+assert.match(workflow, /actions\/upload-artifact@v7\.0\.1/);
+assert.match(workflow, /shared-ui-\$\{\{ github\.run_id \}\}-\$\{\{ github\.sha \}\}/);
+assert.match(workflow, /GITHUB_RUN_ATTEMPT/);
+assert.match(workflow, /check_published/);
 assert.match(workflow, /package_size.*64 \* 1024 \* 1024/);
 assert.match(workflow, /bounded_command/);
 assert.doesNotMatch(workflow, /ulimit\s+-f/);

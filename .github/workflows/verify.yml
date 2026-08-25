@@ -80,6 +80,7 @@ jobs:
           node-version: "22.23.2"
 
       - name: Package and publish the exact immutable release
+        id: package
         shell: bash
         run: |
           set -euo pipefail
@@ -149,6 +150,8 @@ jobs:
           package_size="$(wc -c <"$package_path")"
           test "$package_size" -gt 0 -a "$package_size" -le $((64 * 1024 * 1024))
           package_digest="sha256:$(sha256sum "$package_path" | awk '{print $1}')"
+          printf 'package_name=%s\npackage_size=%s\npackage_digest=%s\n' \
+            "$package_name" "$package_size" "$package_digest" >>"$GITHUB_OUTPUT"
 
           # Re-fetch the source identity after packaging. A tag run is publishable only when
           # the annotated tag still names this commit and the remote main branch is still this
@@ -204,8 +207,29 @@ jobs:
                  (.assets[0].id|type == "number") and (.assets[0].size|type == "number")))
             ' "$release_json" >/dev/null
           }
+          check_published() {
+            jq -e --arg tag "$RELEASE" --arg body "$release_body" --arg tag_object "$tag_object" --arg asset "$package_name" \
+              --arg digest "$package_digest" --argjson size "$package_size" '
+                type == "object" and (.id|type == "number") and .tag_name == $tag and
+                .name == $tag and .body == $body and (.body | contains($tag_object)) and .draft == false and
+                .prerelease == false and .immutable == true and
+                (.assets|type == "array" and length == 1) and
+                .assets[0].name == $asset and .assets[0].state == "uploaded" and
+                (.assets[0].id|type == "number") and .assets[0].size == $size and
+                .assets[0].digest == $digest
+              ' "$release_json" >/dev/null
+          }
+          release_state=''
           if get_release; then
-            check_draft
+            release_state="$(jq -er 'if .draft == true then "draft" elif .draft == false then "published" else empty end' "$release_json")"
+            case "$release_state" in
+              draft) check_draft ;;
+              published)
+                test "$GITHUB_RUN_ATTEMPT" -gt 1
+                check_published
+                ;;
+              *) exit 1 ;;
+            esac
           else
             status=$?
             test "$status" = 4
@@ -220,20 +244,22 @@ jobs:
             get_release || exit 1
             test ! -s "$RUNNER_TEMP/release-create.error"
             check_draft
+            release_state='draft'
           fi
-          asset_count="$(jq -er '.assets|length' "$release_json")"
-          if [[ "$asset_count" -eq 0 ]]; then
-            set +e
-            bounded_command $((64 * 1024)) $((64 * 1024)) $((64 * 1024)) \
-              "$RUNNER_TEMP/release-upload.log" "$RUNNER_TEMP/release-upload.error" 120 \
-              gh release upload "$RELEASE" "$package_path" --repo "github.com/$GITHUB_REPOSITORY"
-            upload_status=$?
-            set -e
-            test ! -s "$RUNNER_TEMP/release-upload.error"
+          if [[ "$release_state" == draft ]]; then
+            asset_count="$(jq -er '.assets|length' "$release_json")"
+            if [[ "$asset_count" -eq 0 ]]; then
+              set +e
+              bounded_command $((64 * 1024)) $((64 * 1024)) $((64 * 1024)) \
+                "$RUNNER_TEMP/release-upload.log" "$RUNNER_TEMP/release-upload.error" 120 \
+                gh release upload "$RELEASE" "$package_path" --repo "github.com/$GITHUB_REPOSITORY"
+              upload_status=$?
+              set -e
+              test ! -s "$RUNNER_TEMP/release-upload.error"
+            fi
             get_release
+            check_draft
           fi
-          get_release
-          check_draft
           asset_id="$(jq -er --arg asset "$package_name" '.assets | select(length == 1) | .[0] | select(.name == $asset) | .id' "$release_json")"
           downloaded="$RUNNER_TEMP/$package_name"
           bounded_command "$((64 * 1024 * 1024))" $((64 * 1024)) $((64 * 1024 * 1024)) \
@@ -245,28 +271,24 @@ jobs:
           cmp "$package_path" "$downloaded"
           test "$(wc -c <"$downloaded")" = "$package_size"
           test "$(sha256sum "$downloaded" | awk '{print "sha256:"$1}')" = "$package_digest"
-          if [[ "${upload_status:-0}" -ne 0 ]]; then
-            test ! -s "$RUNNER_TEMP/release-upload.error"
-          fi
-          set +e
-          bounded_command $((64 * 1024)) $((64 * 1024)) $((64 * 1024)) \
-            "$RUNNER_TEMP/release-edit.log" "$RUNNER_TEMP/release-edit.error" 60 \
-            gh release edit "$RELEASE" --repo "github.com/$GITHUB_REPOSITORY" \
-            --draft=false --verify-tag --title "$RELEASE" --notes "$release_body"
-          edit_status=$?
-          set -e
-          test ! -s "$RUNNER_TEMP/release-edit.error"
-          get_release
-          jq -e --arg tag "$RELEASE" --arg body "$release_body" --arg tag_object "$tag_object" --arg asset "$package_name" \
-            --arg digest "$package_digest" --argjson size "$package_size" '
-              type == "object" and (.id|type == "number") and .tag_name == $tag and
-              .name == $tag and .body == $body and (.body | contains($tag_object)) and .draft == false and
-              .prerelease == false and .immutable == true and
-              (.assets|type == "array" and length == 1) and
-              .assets[0].name == $asset and .assets[0].state == "uploaded" and
-              (.assets[0].id|type == "number") and .assets[0].size == $size and
-              .assets[0].digest == $digest
-            ' "$release_json" >/dev/null
-          if [[ "$edit_status" -ne 0 ]]; then
+          if [[ "$release_state" == draft ]]; then
+            set +e
+            bounded_command $((64 * 1024)) $((64 * 1024)) $((64 * 1024)) \
+              "$RUNNER_TEMP/release-edit.log" "$RUNNER_TEMP/release-edit.error" 60 \
+              gh release edit "$RELEASE" --repo "github.com/$GITHUB_REPOSITORY" \
+              --draft=false --verify-tag --title "$RELEASE" --notes "$release_body"
+            edit_status=$?
+            set -e
             test ! -s "$RUNNER_TEMP/release-edit.error"
+            get_release
           fi
+          check_published
+
+      - name: Preserve the hosted exact package for release recovery
+        if: ${{ always() && steps.package.outcome == 'success' }}
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: shared-ui-${{ github.run_id }}-${{ github.sha }}
+          path: ${{ runner.temp }}/${{ steps.package.outputs.package_name }}
+          if-no-files-found: error
+          retention-days: 7
