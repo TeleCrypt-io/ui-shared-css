@@ -64,6 +64,14 @@ try {
   assert.equal(local.status, 0, local.stderr);
   assert.equal(local.stdout.trim(), head);
 
+  runGit(repo, "remote", "add", "origin", "https://github.com/TeleCrypt-io/ui-shared-css");
+  const checkoutOrigin = spawnSync("bash", [transport, "local-read", "rev-parse", "HEAD"], {
+    cwd: repo,
+    encoding: "utf8",
+  });
+  assert.equal(checkoutOrigin.status, 0, checkoutOrigin.stderr);
+  assert.equal(checkoutOrigin.stdout.trim(), head);
+
   const malformed = spawnSync("bash", [transport, "local-read", "rev-parse", "--option"], {
     cwd: repo,
     encoding: "utf8",

@@ -7,6 +7,7 @@ set -euo pipefail
 readonly GIT=/usr/bin/git
 readonly REPOSITORY='TeleCrypt-io/ui-shared-css'
 readonly REMOTE='https://github.com/TeleCrypt-io/ui-shared-css.git'
+readonly REMOTE_WITHOUT_SUFFIX='https://github.com/TeleCrypt-io/ui-shared-css'
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly TEMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/shared-ui-git.XXXXXX")"
 cleanup() { rm -rf -- "$TEMP_ROOT"; }
@@ -121,7 +122,10 @@ inspect_config_file() {
   set -e
   [[ "$status" -eq 0 || "$status" -eq 1 ]] || die 'Git origin could not be inspected'
   if [[ -n "$origin" ]]; then
-    [[ "$origin" == "$REMOTE" ]] || die 'local Git origin is not canonical'
+    # actions/checkout may initialize origin without the optional .git suffix;
+    # accept only those two exact canonical HTTPS forms.
+    [[ "$origin" == "$REMOTE" || "$origin" == "$REMOTE_WITHOUT_SUFFIX" ]] ||
+      die 'local Git origin is not canonical'
   fi
 }
 
