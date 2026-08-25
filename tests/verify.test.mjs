@@ -11,7 +11,7 @@ const transport = path.join(root, ".github/scripts/git_transport.sh");
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
 
 assert.equal(packageJson.name, "@telecrypt-io/ui");
-assert.equal(packageJson.version, "0.1.2");
+assert.equal(packageJson.version, "0.1.3");
 assert.equal(packageJson.private, true);
 assert.deepEqual(Object.keys(packageJson.exports).sort(), ["./logo-mark.png", "./product.css"]);
 assert.deepEqual(packageJson.dependencies ?? {}, {});
@@ -32,9 +32,9 @@ try {
   runGit(repo, "init", "--quiet");
   runGit(repo, "-c", "user.email=test@example.invalid", "-c", "user.name=Test", "commit", "--allow-empty", "--quiet", "-m", "first");
   const head = runGit(repo, "rev-parse", "HEAD");
-  runGit(repo, "-c", "user.email=test@example.invalid", "-c", "user.name=Test", "tag", "-a", "v0.1.2", "-m", "release");
-  const annotatedTagObject = runGit(repo, "rev-parse", "refs/tags/v0.1.2");
-  const annotatedTagCommit = runGit(repo, "rev-parse", "refs/tags/v0.1.2^{}");
+  runGit(repo, "-c", "user.email=test@example.invalid", "-c", "user.name=Test", "tag", "-a", "v0.1.3", "-m", "release");
+  const annotatedTagObject = runGit(repo, "rev-parse", "refs/tags/v0.1.3");
+  const annotatedTagCommit = runGit(repo, "rev-parse", "refs/tags/v0.1.3^{}");
   assert.notEqual(annotatedTagObject, annotatedTagCommit);
   assert.equal(annotatedTagCommit, head);
   const local = spawnSync("bash", [transport, "local-read", "rev-parse", "HEAD"], {
