@@ -122,6 +122,7 @@ assert.match(workflow, /rev-parse refs\/remotes\/origin\/release-tag\^\{commit\}
 assert.match(workflow, /tag_object=.*rev-parse/);
 assert.doesNotMatch(workflow, /rev-parse refs\/remotes\/origin\/release-tag\^\{\}\).*rev-parse/);
 assert.match(workflow, /annotated tag \$tag_object/);
+assert.match(workflow, /--verify-tag --target "\$RELEASE_SHA"/);
 assert.match(workflow, /npm pack/);
 assert.match(workflow, /id: package/);
 assert.match(workflow, /actions\/upload-artifact@v7\.0\.1/);

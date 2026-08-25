@@ -237,7 +237,7 @@ jobs:
             bounded_command $((64 * 1024)) $((64 * 1024)) $((64 * 1024)) \
               "$RUNNER_TEMP/release-create.log" "$RUNNER_TEMP/release-create.error" 60 \
               gh release create "$RELEASE" --repo "github.com/$GITHUB_REPOSITORY" --draft \
-              --verify-tag --title "$RELEASE" --notes "$release_body"
+              --verify-tag --target "$RELEASE_SHA" --title "$RELEASE" --notes "$release_body"
             set -e
             # A timed-out create may have succeeded. Continue only after the exact draft can be
             # re-fetched; any published or ambiguous record remains a hard failure.
