@@ -285,7 +285,7 @@ jobs:
           check_published
 
       - name: Preserve the hosted exact package for release recovery
-        if: ${{ always() && steps.package.outcome == 'success' }}
+        if: ${{ always() && steps.package.outputs.package_name != '' }}
         uses: actions/upload-artifact@v7.0.1
         with:
           name: shared-ui-${{ github.run_id }}-${{ github.sha }}
